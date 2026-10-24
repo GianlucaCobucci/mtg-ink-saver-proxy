@@ -131,7 +131,7 @@ async function symbolImg(code) {            // code: "{2}", "{W/U}", ...
   if (symCache.has(code)) return symCache.get(code);
   let out = null;
   try {
-    const im = await loadImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MANA_SVG[code]));
+    const im = await loadImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MANA_SVG[code].replace('<svg ', "<svg width='100' height='100' ")));   // Safari/Firefox vogliono una dimensione esplicita
     const N = 96, cv = document.createElement('canvas'); cv.width = cv.height = N;
     const ctx = cv.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(im, 0, 0, N, N);
