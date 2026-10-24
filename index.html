@@ -30,10 +30,6 @@
     <h1>MTG Ink-Saver Proxy</h1>
     <textarea id="deck" placeholder="4 Lightning Bolt&#10;1 Sol Ring&#10;2x Counterspell (MH2) 267"></textarea>
 
-    <label>Dettaglio illustrazione: <b id="tv">35</b> (basso = meno inchiostro)</label>
-    <input id="thr" type="range" min="10" max="90" value="35">
-    <label class="chk"><input id="hatch" type="checkbox" checked> Tratteggio nelle zone scure</label>
-    <label class="chk"><input id="noart" type="checkbox"> Nessuna illustrazione (solo riquadro)</label>
     <label class="chk"><input id="strip" type="checkbox" checked> Rimuovi reminder text tra parentesi</label>
     <label class="chk"><input id="backs" type="checkbox" checked> Stampa anche il retro delle carte doppia faccia</label>
 
@@ -51,9 +47,8 @@ const $ = id => document.getElementById(id);
 // Geometria (mm). Carta reale 63x88, A4 3x3.
 const CW = 63, CH = 88, PW = 210, PH = 297;
 const MX = (PW - 3 * CW) / 2, MY = (PH - 3 * CH) / 2;
-const ART_W = 57, ART_H = 41, PX_PER_MM = 10;
+const ART_W = 57, ART_H = 41;
 
-$('thr').oninput = () => $('tv').textContent = $('thr').value;
 
 /* ---------- Decklist ---------- */
 function parseDeck(text) {
@@ -121,7 +116,7 @@ function toPrintable(c, withBacks) {
   return [mk(c, c.image_uris && c.image_uris.art_crop)];
 }
 
-/* ---------- Stilizzazione illustrazione ---------- */
+/* ---------- Simboli di mana (SVG Scryfall -> B/N) ---------- */
 function loadImg(url) {
   return new Promise((res, rej) => {
     const im = new Image(); im.crossOrigin = 'anonymous';
@@ -130,42 +125,29 @@ function loadImg(url) {
   });
 }
 
-async function stylize(url, thr, hatch) {
-  const w = ART_W * PX_PER_MM, h = ART_H * PX_PER_MM;
-  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-  const ctx = cv.getContext('2d', { willReadFrequently: true });
-  const im = await loadImg(url);
-  // cover-fit
-  const s = Math.max(w / im.width, h / im.height);
-  const dw = im.width * s, dh = im.height * s;
-  ctx.drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  const d = ctx.getImageData(0, 0, w, h).data;
-
-  let g = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) g[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
-  // blur 3x3 per ridurre il rumore
-  const b = new Float32Array(w * h);
-  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-    let s9 = 0;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s9 += g[(y+dy)*w + x+dx];
-    b[y*w + x] = s9 / 9;
-  }
-  const on = new Uint8Array(w * h);
-  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-    const i = y*w + x;
-    const gx = -b[i-w-1] - 2*b[i-1] - b[i+w-1] + b[i-w+1] + 2*b[i+1] + b[i+w+1];
-    const gy = -b[i-w-1] - 2*b[i-w] - b[i-w+1] + b[i+w-1] + 2*b[i+w] + b[i+w+1];
-    const edge = Math.hypot(gx, gy) / 4 > thr;
-    const dark = hatch && b[i] < 35 && ((x + y) % 14) < 2;
-    if (edge || dark) { on[i] = 1; on[i+1] = 1; on[i+w] = 1; }   // ispessisce a ~0.2mm
-  }
-  const out = ctx.createImageData(w, h);
-  for (let i = 0; i < w * h; i++) {
-    const v = on[i] ? 0 : 255;
-    out.data[i*4] = out.data[i*4+1] = out.data[i*4+2] = v; out.data[i*4+3] = 255;
-  }
-  ctx.putImageData(out, 0, 0);
-  return cv.toDataURL('image/png');
+const symCache = new Map();
+async function symbolImg(code) {            // code: "{2}", "{W/U}", ...
+  if (symCache.has(code)) return symCache.get(code);
+  let out = null;
+  try {
+    const file = code.replace(/[{}\/]/g, '');
+    const im = await loadImg(`https://svgs.scryfall.io/card-symbols/${file}.svg`);
+    const N = 96, cv = document.createElement('canvas'); cv.width = cv.height = N;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(im, 0, 0, N, N);
+    const d = ctx.getImageData(0, 0, N, N);
+    for (let i = 0; i < N * N; i++) {       // glifo scuro -> nero, resto bianco
+      const lum = 0.299 * d.data[i*4] + 0.587 * d.data[i*4+1] + 0.114 * d.data[i*4+2];
+      const v = d.data[i*4+3] > 40 && lum < 100 ? 0 : 255;
+      d.data[i*4] = d.data[i*4+1] = d.data[i*4+2] = v; d.data[i*4+3] = 255;
+    }
+    ctx.putImageData(d, 0, 0);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(N / 2, N / 2, N / 2 - 4, 0, Math.PI * 2); ctx.stroke();
+    out = cv.toDataURL('image/png');
+  } catch {}
+  symCache.set(code, out);
+  return out;
 }
 
 /* ---------- Disegno carta ---------- */
@@ -180,23 +162,29 @@ function fitText(doc, str, maxW, size, min) {
   return size;
 }
 
-function drawCard(doc, x, y, c, art, strip) {
+function drawCard(doc, x, y, c, strip) {
   doc.setDrawColor(0); doc.setLineWidth(0.3); doc.setTextColor(0); doc.setFillColor(255);
   doc.roundedRect(x, y, CW, CH, 3, 3, 'S');
 
   // barra nome
   doc.setLineWidth(0.25);
   doc.roundedRect(x + 3, y + 3, 57, 6.5, 1.5, 1.5, 'S');
-  const cost = clean(c.cost.replace(/\{([^}]+)\}/g, '$1 ').trim());
+  const syms = c.cost.match(/\{[^}]+\}/g) || [];
+  const SS = 3.4;                           // lato simbolo (mm)
   doc.setFont('helvetica', 'bold');
   let cw = 0;
-  if (cost) { doc.setFontSize(7); cw = doc.getTextWidth(cost) + 1; doc.text(cost, x + 58.5, y + 7.3, { align: 'right' }); }
-  fitText(doc, clean(c.name), 57 - 3 - cw, 8.5, 5);
+  syms.forEach((code, i) => {
+    cw += SS + 0.3;
+    const img = symCache.get(code);
+    const sx = x + 58.5 - cw + 0.3, sy = y + 3.1 + (6.5 - SS) / 2;
+    if (img) doc.addImage(img, 'PNG', sx, sy, SS, SS, undefined, 'FAST');
+    else { doc.setFontSize(6); doc.text(code.replace(/[{}]/g, ''), sx, sy + 2.5); }
+  });
+  fitText(doc, clean(c.name), 57 - 3 - cw - 1, 8.5, 5);
   doc.text(clean(c.name), x + 4.5, y + 7.4);
 
   // illustrazione
   doc.rect(x + 3, y + 10.5, ART_W, ART_H, 'S');
-  if (art) doc.addImage(art, 'PNG', x + 3, y + 10.5, ART_W, ART_H, undefined, 'FAST');
 
   // barra tipo
   doc.roundedRect(x + 3, y + 52.5, 57, 5.5, 1.5, 1.5, 'S');
@@ -249,25 +237,15 @@ $('go').onclick = async () => {
     const { found, missing } = await fetchCards([...new Set(deck.map(d => d.name))]);
 
     const printable = [];
-    const noArt = $('noart').checked;
-    const thr = +$('thr').value, hatch = $('hatch').checked;
-    const artCache = new Map();
     const notFound = new Set(missing);
-    let done = 0;
-    const uniq = deck.filter(d => found.has(d.name.toLowerCase())).length;
     for (const d of deck) {
       const sc = found.get(d.name.toLowerCase());
       if (!sc) { notFound.add(d.name); continue; }
-      const faces = toPrintable(sc, $('backs').checked);
-      for (const f of faces) {
-        if (!noArt && f.art && !artCache.has(f.art)) {
-          log(`Stilizzo illustrazioni… ${++done}/${uniq}`);
-          try { artCache.set(f.art, await stylize(f.art, thr, hatch)); } catch { artCache.set(f.art, null); }
-        }
-        f.artData = artCache.get(f.art) || null;
-        for (let k = 0; k < d.qty; k++) printable.push(f);
-      }
+      for (const f of toPrintable(sc, $('backs').checked)) for (let k = 0; k < d.qty; k++) printable.push(f);
     }
+    const codes = new Set(printable.flatMap(c => c.cost.match(/\{[^}]+\}/g) || []));
+    log('Scarico i simboli di mana…');
+    await Promise.all([...codes].map(symbolImg));
     if (!printable.length) throw new Error('Nessuna carta trovata.');
 
     log('Compongo il PDF…');
@@ -276,7 +254,7 @@ $('go').onclick = async () => {
       const slot = i % 9;
       if (i > 0 && slot === 0) doc.addPage();
       if (slot === 0) drawCutGuides(doc);
-      drawCard(doc, MX + (slot % 3) * CW, MY + Math.floor(slot / 3) * CH, c, c.artData, $('strip').checked);
+      drawCard(doc, MX + (slot % 3) * CW, MY + Math.floor(slot / 3) * CH, c, $('strip').checked);
     });
 
     const blob = doc.output('blob');
