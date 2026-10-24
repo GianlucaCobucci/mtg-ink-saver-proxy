@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MTG Ink-Saver Proxy</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14'%3E%3Crect x='1' y='1' width='8' height='12' rx='1.5' fill='none' stroke='%23000'/%3E%3Crect x='2.5' y='3' width='5' height='4' fill='none' stroke='%23000' stroke-width='.6'/%3E%3C/svg%3E">
+<script src="vendor/jspdf.umd.min.js"></script>
 <script src="symbols.js"></script>
 <style>
   :root { --bg:#fafafa; --fg:#1a1a1a; --mut:#666; --line:#d4d4d4; --acc:#111; }
@@ -23,6 +24,8 @@
   #status { margin-top:10px; font-size:13px; color:var(--mut); white-space:pre-wrap; }
   iframe { width:100%; height:calc(100vh - 48px); border:1px solid var(--line); border-radius:6px; background:#fff; }
   #dl { display:none; }
+  button.sec { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  input[type=number] { width:100%; padding:6px 8px; font:inherit; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; }
 </style>
 </head>
 <body>
@@ -34,8 +37,12 @@
     <label class="chk"><input id="strip" type="checkbox" checked> Rimuovi reminder text tra parentesi</label>
     <label class="chk"><input id="backs" type="checkbox" checked> Stampa anche il retro delle carte doppia faccia</label>
 
+    <label for="scale">Scala di stampa (%) &mdash; lascia 100 se le carte escono da 63&times;88 mm</label>
+    <input id="scale" type="number" min="90" max="110" step="0.1" value="100">
+
     <button id="go">Genera PDF</button>
     <button id="dl">Scarica PDF</button>
+    <button id="cal" class="sec">Pagina di calibrazione (righello)</button>
     <div id="status"></div>
   </section>
   <section><iframe id="pv" title="Anteprima PDF"></iframe></section>
@@ -72,17 +79,27 @@ function parseDeck(text) {
 /* ---------- Scryfall ---------- */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+async function scryfallCollection(chunk) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch('https://api.scryfall.com/cards/collection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ identifiers: chunk.map(name => ({ name })) })
+      });
+    } catch { throw new Error('Impossibile contattare Scryfall: controlla la connessione.'); }
+    if (res.ok) return res.json();
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) { await sleep(1000 * (attempt + 1)); continue; }
+    throw new Error('Scryfall ha risposto ' + res.status);
+  }
+}
+
 async function fetchCards(names) {
   const found = new Map(), missing = [];
   for (let i = 0; i < names.length; i += 75) {
     const chunk = names.slice(i, i + 75);
-    const res = await fetch('https://api.scryfall.com/cards/collection', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ identifiers: chunk.map(name => ({ name })) })
-    });
-    if (!res.ok) throw new Error('Scryfall ' + res.status);
-    const j = await res.json();
+    const j = await scryfallCollection(chunk);
     for (const c of j.data) {
       found.set(c.name.toLowerCase(), c);
       (c.card_faces || []).forEach(f => found.set(f.name.toLowerCase(), c));
@@ -96,25 +113,23 @@ async function fetchCards(names) {
 // Una carta Scryfall -> una o più "facce stampabili"
 function toPrintable(c, withBacks) {
   const dfc = c.card_faces && c.card_faces[0].image_uris;
-  const mk = (f, art) => ({
+  const mk = f => ({
     name: f.name, cost: f.mana_cost || '', type: f.type_line || '',
-    text: f.oracle_text || '', pt: f.power != null ? `${f.power}/${f.toughness}` : (f.loyalty ? String(f.loyalty) : (f.defense ? String(f.defense) : '')),
-    art
+    text: f.oracle_text || '', pt: f.power != null ? `${f.power}/${f.toughness}` : (f.loyalty ? String(f.loyalty) : (f.defense ? String(f.defense) : ''))
   });
   if (dfc) {
     const faces = withBacks ? c.card_faces : [c.card_faces[0]];
-    return faces.map(f => mk(f, f.image_uris.art_crop));
+    return faces.map(mk);
   }
   if (c.card_faces) { // split / adventure / flip: una sola immagine
     const f = c.card_faces;
     return [{
       name: c.name, cost: f.map(x => x.mana_cost || '').join(' // '), type: c.type_line || '',
       text: f.map(x => x.oracle_text || '').join('\n—\n'),
-      pt: f[0].power != null ? `${f[0].power}/${f[0].toughness}` : '',
-      art: c.image_uris && c.image_uris.art_crop
+      pt: f[0].power != null ? `${f[0].power}/${f[0].toughness}` : ''
     }];
   }
-  return [mk(c, c.image_uris && c.image_uris.art_crop)];
+  return [mk(c)];
 }
 
 /* ---------- Simboli di mana (SVG Scryfall incorporati -> B/N) ---------- */
@@ -216,16 +231,62 @@ function drawCard(doc, x, y, c, strip) {
 }
 
 /* ---------- Pagina ---------- */
+const PT_MM = 72 / 25.4;
+// Ingrandisce/riduce l'intera pagina attorno al centro (compensa stampanti che riducono).
+function beginPage(doc, k) {
+  const tx = (PW / 2) * (1 - k) * PT_MM, ty = (PH / 2) * (1 - k) * PT_MM;
+  doc.internal.write('q', `${k} 0 0 ${k} ${tx.toFixed(3)} ${ty.toFixed(3)} cm`);
+}
+const endPage = doc => doc.internal.write('Q');
+
 function drawCutGuides(doc) {
   doc.setDrawColor(150); doc.setLineWidth(0.1);
   for (let i = 0; i <= 3; i++) {
-    doc.line(MX + i * CW, 0, MX + i * CW, PH);
-    doc.line(0, MY + i * CH, PW, MY + i * CH);
+    doc.line(MX + i * CW, -30, MX + i * CW, PH + 30);   // oltre i bordi: coprono anche scala > 100%
+    doc.line(-30, MY + i * CH, PW + 30, MY + i * CH);
   }
+}
+
+function newDoc() {
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  doc.viewerPreferences({ PrintScaling: 'None' });   // Acrobat/Preview: stampa a dimensione reale
+  return doc;
+}
+
+function readScale() {
+  const v = parseFloat($('scale').value);
+  return v >= 90 && v <= 110 ? v / 100 : 1;
 }
 
 /* ---------- Main ---------- */
 let blobUrl = null;
+function show(doc) {
+  if (blobUrl) URL.revokeObjectURL(blobUrl);
+  blobUrl = URL.createObjectURL(doc.output('blob'));
+  $('pv').src = blobUrl;
+  $('dl').style.display = 'block';
+}
+try { $('scale').value = localStorage.getItem('scale') || 100; } catch {}
+$('scale').onchange = () => { try { localStorage.setItem('scale', $('scale').value); } catch {} };
+
+$('cal').onclick = () => {
+  const doc = newDoc();                         // sempre al 100%: serve a misurare l'errore
+  doc.setDrawColor(0); doc.setTextColor(0); doc.setLineWidth(0.3);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+  doc.text('Calibrazione stampa', 20, 25);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text(doc.splitTextToSize('Stampa questa pagina scegliendo "Dimensioni reali" / "100%" / "Nessun ridimensionamento" (NON "Adatta alla pagina"), su carta A4. ' +
+    'Misura con un righello la linea orizzontale: dovrebbe essere lunga 100 mm. Se misura X mm, scrivi nel campo "Scala di stampa" il valore 10000 / X ' +
+    '(es. 98,5 mm -> 101,5).', 170), 20, 33);
+  doc.line(20, 70, 120, 70);                    // 100 mm esatti
+  for (let i = 0; i <= 10; i++) doc.line(20 + i * 10, 67, 20 + i * 10, 73);
+  doc.setFontSize(8); doc.text('0', 19, 78); doc.text('100 mm', 114, 78);
+  doc.line(20, 90, 20, 190);                    // 100 mm verticali
+  for (let i = 0; i <= 10; i++) doc.line(17, 90 + i * 10, 23, 90 + i * 10);
+  doc.setLineWidth(0.3); doc.roundedRect(60, 100, CW, CH, 3, 3, 'S');
+  doc.setFontSize(9); doc.text('63 x 88 mm: sovrapponi una carta vera', 61, 98);
+  show(doc); $('status').textContent = 'Pagina di calibrazione pronta.';
+};
 $('go').onclick = async () => {
   const btn = $('go'), st = $('status');
   const log = m => st.textContent = m;
@@ -249,19 +310,16 @@ $('go').onclick = async () => {
     if (!printable.length) throw new Error('Nessuna carta trovata.');
 
     log('Compongo il PDF…');
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const doc = newDoc(), k = readScale();
     printable.forEach((c, i) => {
       const slot = i % 9;
-      if (i > 0 && slot === 0) doc.addPage();
-      if (slot === 0) drawCutGuides(doc);
+      if (i > 0 && slot === 0) { endPage(doc); doc.addPage(); }
+      if (slot === 0) { beginPage(doc, k); drawCutGuides(doc); }
       drawCard(doc, MX + (slot % 3) * CW, MY + Math.floor(slot / 3) * CH, c, $('strip').checked);
     });
 
-    const blob = doc.output('blob');
-    if (blobUrl) URL.revokeObjectURL(blobUrl);
-    blobUrl = URL.createObjectURL(blob);
-    $('pv').src = blobUrl;
-    $('dl').style.display = 'block';
+    endPage(doc);
+    show(doc);
     log(`${printable.length} carte, ${Math.ceil(printable.length / 9)} pagine.` +
         (notFound.size ? `\nNon trovate: ${[...notFound].join(', ')}` : ''));
   } catch (e) {
