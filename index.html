@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MTG Ink-Saver Proxy</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="symbols.js"></script>
 <style>
   :root { --bg:#fafafa; --fg:#1a1a1a; --mut:#666; --line:#d4d4d4; --acc:#111; }
   @media (prefers-color-scheme: dark) { :root { --bg:#161616; --fg:#eee; --mut:#999; --line:#333; --acc:#eee; } }
@@ -116,7 +117,7 @@ function toPrintable(c, withBacks) {
   return [mk(c, c.image_uris && c.image_uris.art_crop)];
 }
 
-/* ---------- Simboli di mana (SVG Scryfall -> B/N) ---------- */
+/* ---------- Simboli di mana (SVG Scryfall incorporati -> B/N) ---------- */
 function loadImg(url) {
   return new Promise((res, rej) => {
     const im = new Image(); im.crossOrigin = 'anonymous';
@@ -130,8 +131,7 @@ async function symbolImg(code) {            // code: "{2}", "{W/U}", ...
   if (symCache.has(code)) return symCache.get(code);
   let out = null;
   try {
-    const file = code.replace(/[{}\/]/g, '');
-    const im = await loadImg(`https://svgs.scryfall.io/card-symbols/${file}.svg`);
+    const im = await loadImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MANA_SVG[code]));
     const N = 96, cv = document.createElement('canvas'); cv.width = cv.height = N;
     const ctx = cv.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(im, 0, 0, N, N);
@@ -173,7 +173,7 @@ function drawCard(doc, x, y, c, strip) {
   const SS = 3.4;                           // lato simbolo (mm)
   doc.setFont('helvetica', 'bold');
   let cw = 0;
-  syms.forEach((code, i) => {
+  [...syms].reverse().forEach(code => {   // da destra a sinistra, così l ordine resta quello del costo
     cw += SS + 0.3;
     const img = symCache.get(code);
     const sx = x + 58.5 - cw + 0.3, sy = y + 3.1 + (6.5 - SS) / 2;
