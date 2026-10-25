@@ -35,6 +35,7 @@
     <textarea id="deck" placeholder="4 Lightning Bolt&#10;1 Sol Ring&#10;2x Counterspell (MH2) 267"></textarea>
 
     <label class="chk"><input id="strip" type="checkbox" checked> Rimuovi reminder text tra parentesi</label>
+    <label class="chk"><input id="square" type="checkbox"> Angoli squadrati (taglio più facile)</label>
     <label class="chk"><input id="backs" type="checkbox" checked> Stampa anche il retro delle carte doppia faccia</label>
 
     <label for="scale">Scala di stampa (%) &mdash; lascia 100 se le carte escono da 63&times;88 mm</label>
@@ -177,9 +178,9 @@ function fitText(doc, str, maxW, size, min) {
   return size;
 }
 
-function drawCard(doc, x, y, c, strip) {
+function drawCard(doc, x, y, c, strip, square) {
   doc.setDrawColor(0); doc.setLineWidth(0.3); doc.setTextColor(0); doc.setFillColor(255);
-  doc.roundedRect(x, y, CW, CH, 3, 3, 'S');
+  if (square) doc.rect(x, y, CW, CH, 'S'); else doc.roundedRect(x, y, CW, CH, 3, 3, 'S');
 
   // barra nome
   doc.setLineWidth(0.25);
@@ -315,7 +316,7 @@ $('go').onclick = async () => {
       const slot = i % 9;
       if (i > 0 && slot === 0) { endPage(doc); doc.addPage(); }
       if (slot === 0) { beginPage(doc, k); drawCutGuides(doc); }
-      drawCard(doc, MX + (slot % 3) * CW, MY + Math.floor(slot / 3) * CH, c, $('strip').checked);
+      drawCard(doc, MX + (slot % 3) * CW, MY + Math.floor(slot / 3) * CH, c, $('strip').checked, $('square').checked);
     });
 
     endPage(doc);
